@@ -1,12 +1,17 @@
 from typing import Optional, Literal, Union
 import time
+import logging
 
 import numpy as np
 from scipy.fft import fft, ifft
 from scipy.special import psi, gammaln
 
-from rdcmpy import log
 import rdcmpy.spm_functions as spm_func
+
+
+logging.basicConfig(level=logging.ERROR)
+log = logging.getLogger('rdcmpy')
+log.setLevel(level=logging.INFO)
 
 
 class DimensionError(Exception):
@@ -19,13 +24,13 @@ class RegressionDCM:
     def __init__(
             self, data: np.ndarray, t_rep: float, endo_input: Optional[np.ndarray] = None,
             method: Literal['original', 'sparse'] = 'original', endo_shift: int = 0,
-            padding: bool = False, snr_thresh_std: Union[int, None] = 1) -> None:
+            padding: bool = False, snr_thresh_std: Union[int, None] = 1,
+            debug: bool = False) -> None:
         self.data = data
         self.t_rep = t_rep
         self.samp_rate = t_rep / 16
         self.n_datapoint, self.n_region = data.shape
         self.conv_length = self.n_datapoint * 16
-        self._convolution_bm()
 
         if endo_input is not None:
             self._add_endo(endo_input)
@@ -45,6 +50,9 @@ class RegressionDCM:
         self.endo_shift = endo_shift
         self.padding = padding
         self.snr_thresh_std = snr_thresh_std
+
+        if debug:
+            log.setLevel(level=logging.DEBUG)
 
         # TODO: set up dummy a, b, c, d??
 
@@ -91,15 +99,15 @@ class RegressionDCM:
         endo_dummy[0] = 1  # single impulse (r_dt = 1)
 
         # Balloon hemodynamic model
-        x = np.zeros(endo_dummy.shape)  # input stimulus
-        s = np.zeros(endo_dummy.shape)  # flow-induced signal
-        f1 = np.zeros(endo_dummy.shape)  # in-flow
+        x = np.zeros(self.conv_length)  # input stimulus
+        s = np.zeros(self.conv_length)  # flow-induced signal
+        f1 = np.zeros(self.conv_length)  # in-flow
         f1[0] = 1
         f1_old = 0
-        v1 = np.zeros(endo_dummy.shape)  # normalised venous volume
+        v1 = np.zeros(self.conv_length)  # normalised venous volume
         v1[0] = 1
         v1_old = 0
-        q1 = np.zeros(endo_dummy.shape)  # normalised total deoxyhemoglobin voxel content
+        q1 = np.zeros(self.conv_length)  # normalised total deoxyhemoglobin voxel content
         q1[0] = 1
         q1_old = 0
 
@@ -111,7 +119,7 @@ class RegressionDCM:
             v1_old = v1_old + self.samp_rate * ((f1[step]-v1[step]**(1/alpha)) / (tau0*v1[step]))
             v1[step+1] = np.exp(v1_old)
             q1_old = q1_old + self.samp_rate * ((f1[step]*(1-(1-rho_hemo)**(1/f1[step]))/rho_hemo
-                                                 - -v1[step]**(1/alpha)*q1[step]/v1[step])
+                                                 - v1[step]**(1/alpha)*q1[step]/v1[step])
                                                 / (tau0*q1[step]))
             q1[step+1] = np.exp(q1_old)
 
@@ -123,7 +131,7 @@ class RegressionDCM:
     def _filter(
             self, data: np.ndarray, endo: np.ndarray, hrf: np.ndarray) -> (np.ndarray, np.ndarray):
         """Specifies informative frequencies and filters the Fourier-transformed signal"""
-        precision = np.power(10, -4)
+        precision = 1e-4
 
         data_real = np.real(data)
         data_imag = np.imag(data)
@@ -134,13 +142,13 @@ class RegressionDCM:
         else:
             endo_indices = np.full(endo.shape[0], True)
             hpf = np.maximum(16 + (self.snr_thresh_std-1) * 4, 16)
-        freq = np.round(7 * data.shape[0] / hpf)
+        freq = int(np.round(7 * data.shape[0] / hpf))
         freq_indices = np.concatenate((
             np.full((freq+1, data.shape[1]), True),
             np.full((data.shape[0]-freq*2-1, data.shape[1]), False),
             np.full((freq, data.shape[1]), True)))
 
-        hrf_indices = (hrf > precision)
+        hrf_indices = (np.abs(hrf) > precision)
         if self.padding:
             data_indices = np.concatenate((
                 np.full(np.round(self.n_datapoint/2)+1, True),
@@ -162,8 +170,8 @@ class RegressionDCM:
             (np.abs(data_imag) > self.snr_thresh_std*std_imag))
 
         hpf_indices = np.logical_and(
-            np.logical_and(snr_indices,
-                           np.tile(~noise_indices, (1, data.shape[1]))),
+            np.logical_and(snr_indices, np.tile(
+                ~noise_indices.reshape(noise_indices.shape[0], 1), (1, data.shape[1]))),
             freq_indices)
         hpf_indices[0, :] = 1  # constant frequency
         hpf_indices_flip = hpf_indices.copy()
@@ -173,15 +181,15 @@ class RegressionDCM:
         # include everything except padding for informative regions
         data[~hpf_indices] = 0
         for region in range(self.n_region):
-            freq1 = hpf_indices[0:np.round(data.shape[0]/2), region].nonzero()[0][-1]
-            freq2 = hpf_indices[np.round(data.shape[0]/2):-1, region].nonzero()[0][0]
+            freq1 = hpf_indices[0:int(np.round(data.shape[0]/2)), region].nonzero()[0][-1]
+            freq2 = (hpf_indices[int(np.round(data.shape[0]/2)):-1, region].nonzero()[0][0]+
+                     int(np.round(data.shape[0]/2)))
             hpf_indices[0:freq1, region] = True
             hpf_indices[freq2:-1, region] = True
 
         return data, hpf_indices
 
-    @staticmethod
-    def _reduce_zeros(design_mat: np.ndarray, data: np.ndarray) -> np.ndarray:
+    def _reduce_zeros(self, design_mat: np.ndarray, data: np.ndarray) -> np.ndarray:
         """If there are more zero-valued frequencies than informative ones,
         subsample those frequencies to balance dataset"""
         data_all = np.abs(np.hstack((design_mat, data))).sum(axis=1)
@@ -203,32 +211,25 @@ class RegressionDCM:
         if self.endo_input is not None:
             endo_input = np.roll(self.endo_input, self.endo_shift, axis=0)
         else:
-            endo_input = np.zeros(self.data.shape[0]*16)
-
-        endo_conv = fft(endo_input, axis=0, norm='backward')
-        hrf_repmat = np.tile(hrf_fft.reshape(self.conv_length, 1), (1, self.n_endo))
-        endo_input = ifft(endo_conv * hrf_repmat)
+            endo_input = np.zeros((self.n_datapoint*16, 1))
+        endo_input = ifft(
+            fft(endo_input, axis=0, norm='backward') *
+            np.tile(hrf_fft.reshape(self.conv_length, 1), (1, self.n_endo)))
         endo_input = np.hstack((endo_input, self.conf))
 
         if self.padding:
             break_point = np.round(self.n_datapoint / 2)
             data_fft[break_point, :] = data_fft[break_point, :] / 2
             data_fft = 16 * np.vstack((
-                data_fft[0:(break_point+1), :],
-                np.zeros((self.conv_length-self.n_datapoint-1, self.n_region)),
+                data_fft[0:(break_point + 1), :],
+                np.zeros((self.conv_length - self.n_datapoint - 1, self.n_region)),
                 data_fft[break_point:-1, :]))
             self.n_datapoint = data_fft.shape[0]
-            if self.endo_input is not None:
-                endo_fft = fft(endo_input / 16, axis=0, norm='backward')
-            else:
-                endo_fft = np.zeros(endo_input.shape)
+            endo_fft = fft(endo_input / 16, axis=0, norm='backward')
 
         else:
-            if self.endo_input is not None:
-                hrf_fft = fft(self.hrf[0:self.conv_length:16], axis=0, norm='backward')
-                endo_fft = fft(endo_input[0:self.conv_length:16, :], axis=0, norm='backward')
-            else:
-                endo_fft = np.zeros((endo_input.shape[0]/16, endo_input.shape[1]))
+            hrf_fft = fft(self.hrf[0:self.conv_length:16], axis=0, norm='backward')
+            endo_fft = fft(endo_input[0:self.conv_length:16, :], axis=0, norm='backward')
 
         if self.snr_thresh_std is not None:
             data_fft, filter_indices = self._filter(data_fft, endo_fft, hrf_fft)
@@ -236,12 +237,12 @@ class RegressionDCM:
             filter_indices = np.ones(data_fft.shape)
 
         deriv_coef = np.exp(2 * np.pi * 1j * np.arange(self.n_datapoint) / self.n_datapoint) - 1
-        deriv_coef = deriv_coef.reshape(self.n_datapoint, 1)
-        data_deriv = np.tile(deriv_coef, (1, self.n_region)) * data_fft / self.t_rep
+        data_deriv = np.tile(
+            deriv_coef.reshape(self.n_datapoint, 1), (1, self.n_region)) * data_fft / self.t_rep
         data_deriv[~filter_indices] = np.nan
 
         bilinear_term = np.zeros((
-            self.n_datapoint, self.n_region * (endo_input.shape[1]+self.conf.shape[1])))
+            self.n_datapoint, self.n_region * (endo_fft.shape[1]+self.conf.shape[1])))
         design_mat = np.hstack((data_fft, bilinear_term, endo_fft))
         data_mat = self._reduce_zeros(design_mat, data_deriv)
 
@@ -262,26 +263,29 @@ class RegressionDCM:
     def _ridge(self, design_mat: np.ndarray, data_mat: np.ndarray) -> None:
         """Variational Bayesian inversion of a linear DCM with regression DCM.
         The function implements the VB udpate equations derived in Frässele et al. 2017."""
-        precision = np.power(10, -5)
+        precision = 1e-5
 
         spm_a = np.ones((self.n_region, self.n_region))
         spm_b = np.zeros((self.n_region, self.n_region, self.n_endo))
         spm_c = np.ones((self.n_region, self.n_endo))
+        if self.endo_input is None:
+            spm_c = spm_c * 0
         for _ in range(self.conf.shape[1]):
             spm_b = np.dstack((spm_b, spm_b[:, :, 0]))
-            spm_c = np.hstack((spm_c, spm_c[:, 0]))
+            spm_c = np.hstack((spm_c, np.ones((spm_c.shape[0], 1))))
 
-        indices = (np.hstack(
-            spm_a, spm_b.reshape(self.n_region, self.n_region * spm_c.shape[1]), spm_c) > 0)
+        indices = (np.hstack((
+            spm_a, spm_b.reshape(self.n_region, self.n_region * spm_c.shape[1]), spm_c)) > 0)
         prior_mean, prior_prec, prior_a0, prior_b0 = self._prior(spm_a, spm_b, spm_c)
 
         mu = np.zeros(indices.shape)
-        sigma = np.zeros((self.n_region, indices.shape[0], indices.shape[1]))
+        sigma = np.zeros((self.n_region, indices.shape[1], indices.shape[1]))
         alpha = np.zeros(self.n_region)
         beta = np.zeros(self.n_region)
         free_energy = np.zeros(self.n_region)
 
         for region in range(self.n_region):
+            log.debug('Estimating parameters for region %i ...', region)
             data_indices = ~np.isnan(data_mat[:, region])
             design_region = design_mat[np.ix_(data_indices, indices[region, :])]
             data_region = data_mat[data_indices, region]
@@ -290,18 +294,18 @@ class RegressionDCM:
             pp_region = np.diag(prior_prec[region, indices[region, :]])  # precision
             pm_region = prior_mean[region, indices[region, :]]  # mean
 
-            xtx = design_region.T @ design_region
-            xty = design_region.T @ data_region
+            xtx = design_region.conj().T @ design_region
+            xty = design_region.conj().T @ data_region
 
             tau_region = prior_a0 / prior_b0
             alpha_region = prior_a0 + n_effective / (2 * 16)
             free_energy_old = -np.inf
 
-            for _ in range(500):
+            for i in range(500):
                 sigma_region = np.linalg.inv(tau_region * xtx + pp_region)
                 mu_region = sigma_region @ (tau_region * xty + pp_region @ pm_region)
                 post_rate = (
-                        (data_region - design_region @ mu_region).T @
+                        (data_region - design_region @ mu_region).conj().T @
                         (data_region - design_region @ mu_region) / 2 +
                         np.trace(xtx @ sigma_region) / 2)
                 beta_region = prior_b0 + post_rate
@@ -323,19 +327,20 @@ class RegressionDCM:
                     1/2 * spm_func._spm_logdet(sigma_region) +
                     dim_effective * (1 + np.log(2*np.pi)) / 2)
                 log_q_prec = (
-                    alpha_region - np.log(beta_region) + gammaln(alpha_region) -
+                    alpha_region - np.log(beta_region) + gammaln(alpha_region) +
                     (1 - alpha_region) * psi(alpha_region))
 
                 # check convergence
                 free_energy_curr = (
                         log_like + log_p_weight + log_p_prec + log_q_weight + log_q_prec)
+                log.debug('Iteration %i logF = %.4f', i, np.real(free_energy_curr))
                 free_energy_diff = np.power(free_energy_old - np.real(free_energy_curr), 2)
-                if free_energy_diff < precision:
+                if free_energy_diff < np.power(precision, 2):
                     # store parameters
                     indices_curr = indices[region, :]
-                    free_energy[region] = free_energy_curr
+                    free_energy[region] = np.real(free_energy_curr)
                     mu[region, indices_curr] = np.real(mu_region)
-                    sigma[np.ix_(region, indices_curr, indices_curr)] = np.real(sigma_region)
+                    sigma[np.ix_([region], indices_curr, indices_curr)] = np.real(sigma_region)
                     alpha[region] = np.real(alpha_region)
                     beta[region] = np.real(beta_region)
 
@@ -391,7 +396,7 @@ class RegressionDCM:
         # TODO: what is DCM.M??
         # TODO: dummy variables for resting-state??
 
-        log.info('Starting rDCM ...')
+        self._convolution_bm()
         design_mat, data_mat = self._design_matrix()
 
         log.info('Running model inversion ...')
@@ -404,7 +409,7 @@ class RegressionDCM:
 
         log.info('Finished estimation')
         t_end = time.time()
-        log.info('Time taken: %s', time.strftime("%H:%M:%S", time.gmtime(t_start - t_end)))
+        log.info('Time taken: %s', time.strftime('%H:%M:%S', time.gmtime(t_end - t_start)))
 
     def get_priors(self) -> dict:
         return self.priors
