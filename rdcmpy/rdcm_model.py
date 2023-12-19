@@ -23,14 +23,15 @@ class RegressionDCM:
     """regression Dynamic Causal Modelling (rDCM)"""
     def __init__(
             self, data: np.ndarray, t_rep: float, drive_input: Optional[np.ndarray] = None,
-            method: Literal['original', 'sparse'] = 'original', endo_shift: int = 0,
-            padding: bool = False, snr_thresh_std: Union[int, None] = 1,
+            method: Literal['original', 'sparse'] = 'original', prior_a: Optional[np.array] = None,
+            endo_shift: int = 0, padding: bool = False, snr_thresh_std: Union[int, None] = 1,
             debug: bool = False) -> None:
         self.data = data
         self.t_rep = t_rep
         self.samp_rate = t_rep / 16
         self.n_datapoint, self.n_region = data.shape
         self.conv_length = self.n_datapoint * 16
+        self.prior_a = prior_a
 
         if drive_input is not None:
             self._add_drive(drive_input)
@@ -264,7 +265,10 @@ class RegressionDCM:
         The function implements the VB udpate equations derived in Frässele et al. 2017."""
         precision = 1e-5
 
-        prior_a = np.ones((self.n_region, self.n_region))
+        if self.prior_a is not None:
+            prior_a = self.prior_a
+        else:
+            prior_a = np.ones((self.n_region, self.n_region))
         prior_b = np.zeros((self.n_region, self.n_region, self.n_endo))
         prior_c = np.ones((self.n_region, self.n_endo))
         if self.drive_input is None: # resting-state

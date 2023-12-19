@@ -7,7 +7,7 @@ Python implementation of the
 ```python
 from rdcmpy import RegressionDCM
 
-rdcm = RegressionDCM(data, TR, drive_input=task_regressors)
+rdcm = RegressionDCM(data, TR, drive_input=task_regressors, prior_a=SC)
 rdcm.estimate()
 params = rdcm.get_params()
 
