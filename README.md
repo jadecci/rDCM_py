@@ -3,6 +3,18 @@ Python implementation of the
 [regression Dynamic Causal Modelling (rDCM) toolbox](https://github.com/translationalneuromodeling/tapas/tree/master/rDCM) 
 (v6.0.0).
 
+## Usage
+```python
+from rdcmpy import RegressionDCM
+
+rdcm = RegressionDCM(data, TR, drive_input=task_regressors)
+rdcm.estimate()
+params = rdcm.get_params()
+
+A = params['mu_connectivity']
+C = params['mu_driving_input']
+```
+
 ### Functions translated
 1. Original ridge rDCM model
 2. Works for both task and resting-state fMRI data
