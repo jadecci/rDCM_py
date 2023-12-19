@@ -26,42 +26,42 @@ class RegressionDCM:
             method: Literal['original', 'sparse'] = 'original', prior_a: Optional[np.array] = None,
             endo_shift: int = 0, padding: bool = False, snr_thresh_std: Union[int, None] = 1,
             debug: bool = False) -> None:
-        self.data = data
-        self.t_rep = t_rep
-        self.samp_rate = t_rep / 16
-        self.n_datapoint, self.n_region = data.shape
-        self.conv_length = self.n_datapoint * 16
-        self.prior_a = prior_a
+        self._data = data
+        self._t_rep = t_rep
+        self._samp_rate = t_rep / 16
+        self._n_datapoint, self._n_region = data.shape
+        self._conv_length = self._n_datapoint * 16
+        self._prior_a = prior_a
 
         if drive_input is not None:
             self._add_drive(drive_input)
-            self.n_endo = self.drive_input.shape[1]
-            self.conf = np.ones((self.conv_length, 1))
+            self._n_endo = self._drive_input.shape[1]
+            self._conf = np.ones((self._conv_length, 1))
         else:
-            self.drive_input = None
-            self.n_endo = 1
-            self.conf = np.zeros((self.conv_length, 0))
+            self._drive_input = None
+            self._n_endo = 1
+            self._conf = np.zeros((self._conv_length, 0))
 
         if method not in ['original', 'sparse']:
             msg = "method must be 'original' or 'sparse'"
             log.error(msg)
             raise ValueError(msg)
 
-        self.method = method
-        self.endo_shift = endo_shift
-        self.padding = padding
-        self.snr_thresh_std = snr_thresh_std
+        self._method = method
+        self._endo_shift = endo_shift
+        self._padding = padding
+        self._snr_thresh_std = snr_thresh_std
 
         if debug:
             log.setLevel(level=logging.DEBUG)
 
     def _add_drive(self, drive_input: np.ndarray) -> None:
         """Add endogenous input to the DCM model"""
-        if drive_input.shape[0] == self.data.shape[0] * 16:
+        if drive_input.shape[0] == self._data.shape[0] * 16:
             log.debug('endo_input with dimenions (16xN)xU assigned directly')
-            self.drive_input = drive_input
+            self._drive_input = drive_input
 
-        elif drive_input.shape[0] == self.data.shape[0]:
+        elif drive_input.shape[0] == self._data.shape[0]:
             log.debug(
                 'endo_input with dimensions NxU will be repeated '
                 'to match the correct microtime resolution')
@@ -70,7 +70,7 @@ class RegressionDCM:
                 drive_curr = drive_input[:, nr_input].T
                 drive_curr = np.tile(drive_curr, (16, 1))
                 drive_input_up[:, nr_input] = drive_curr.flatten()
-            self.drive_input = drive_input_up
+            self._drive_input = drive_input_up
 
         else:
             msg = (
@@ -94,32 +94,32 @@ class RegressionDCM:
         r0 = 25  # relaxation slope
         v0 = 4  # resting venous volume
 
-        endo_dummy = np.zeros(self.conv_length)
+        endo_dummy = np.zeros(self._conv_length)
         endo_dummy[0] = 1  # single impulse (r_dt = 1)
 
         # Balloon hemodynamic model
-        x = np.zeros(self.conv_length)  # input stimulus
-        s = np.zeros(self.conv_length)  # flow-induced signal
-        f1 = np.zeros(self.conv_length)  # in-flow
+        x = np.zeros(self._conv_length)  # input stimulus
+        s = np.zeros(self._conv_length)  # flow-induced signal
+        f1 = np.zeros(self._conv_length)  # in-flow
         f1[0] = 1
         f1_old = 0
-        v1 = np.zeros(self.conv_length)  # normalised venous volume
+        v1 = np.zeros(self._conv_length)  # normalised venous volume
         v1[0] = 1
         v1_old = 0
-        q1 = np.zeros(self.conv_length)  # normalised total deoxyhemoglobin voxel content
+        q1 = np.zeros(self._conv_length)  # normalised total deoxyhemoglobin voxel content
         q1[0] = 1
         q1_old = 0
 
-        for step in range(self.conv_length-1):
-            x[step+1] = x[step] + self.samp_rate * (endo_dummy[step] - x[step])
-            s[step+1] = s[step] + self.samp_rate * (x[step] - kappa*s[step] - gamma*(f1[step]-1))
-            f1_old = f1_old + self.samp_rate * (s[step] / f1[step])
+        for step in range(self._conv_length - 1):
+            x[step+1] = x[step] + self._samp_rate * (endo_dummy[step] - x[step])
+            s[step+1] = s[step] + self._samp_rate * (x[step] - kappa * s[step] - gamma * (f1[step] - 1))
+            f1_old = f1_old + self._samp_rate * (s[step] / f1[step])
             f1[step+1] = np.exp(f1_old)
-            v1_old = v1_old + self.samp_rate * ((f1[step]-v1[step]**(1/alpha)) / (tau0*v1[step]))
+            v1_old = v1_old + self._samp_rate * ((f1[step] - v1[step] ** (1 / alpha)) / (tau0 * v1[step]))
             v1[step+1] = np.exp(v1_old)
-            q1_old = q1_old + self.samp_rate * ((f1[step]*(1-(1-rho_hemo)**(1/f1[step]))/rho_hemo
-                                                 - v1[step]**(1/alpha)*q1[step]/v1[step])
-                                                / (tau0*q1[step]))
+            q1_old = q1_old + self._samp_rate * ((f1[step] * (1 - (1 - rho_hemo) ** (1 / f1[step])) / rho_hemo
+                                                  - v1[step] ** (1/alpha) * q1[step] / v1[step])
+                                                 / (tau0*q1[step]))
             q1[step+1] = np.exp(q1_old)
 
         # Balloon BOLD signal model
@@ -135,12 +135,12 @@ class RegressionDCM:
         data_real = np.real(data)
         data_imag = np.imag(data)
 
-        if self.drive_input is not None:
+        if self._drive_input is not None:
             drive_indices = (np.abs(drive).sum(axis=1) > precision)
             hpf = 16
         else:
             drive_indices = np.full(drive.shape[0], True)
-            hpf = np.maximum(16 + (self.snr_thresh_std-1) * 4, 16)
+            hpf = np.maximum(16 + (self._snr_thresh_std - 1) * 4, 16)
         freq = int(np.round(7 * data.shape[0] / hpf))
         freq_indices = np.concatenate((
             np.full((freq+1, data.shape[1]), True),
@@ -148,13 +148,13 @@ class RegressionDCM:
             np.full((freq, data.shape[1]), True)))
 
         hrf_indices = (np.abs(hrf) > precision)
-        if self.padding:
+        if self._padding:
             data_indices = np.concatenate((
-                np.full(np.round(self.n_datapoint/2)+1, True),
-                np.full(self.n_datapoint-self.data.shape[0]-1, False),
-                np.full(self.n_datapoint/2, True)))
+                np.full(np.round(self._n_datapoint / 2) + 1, True),
+                np.full(self._n_datapoint - self._data.shape[0] - 1, False),
+                np.full(self._n_datapoint / 2, True)))
         else:
-            data_indices = np.full(self.n_datapoint, True)
+            data_indices = np.full(self._n_datapoint, True)
         noise_indices = np.array(
             ~np.logical_and(np.logical_and(hrf_indices, drive_indices), data_indices))
 
@@ -165,8 +165,8 @@ class RegressionDCM:
             std_real = np.zeros(data.shape)
             std_imag = np.zeros(data.shape)
         snr_indices = np.logical_or(
-            (np.abs(data_real) > self.snr_thresh_std*std_real),
-            (np.abs(data_imag) > self.snr_thresh_std*std_imag))
+            (np.abs(data_real) > self._snr_thresh_std * std_real),
+            (np.abs(data_imag) > self._snr_thresh_std * std_imag))
 
         hpf_indices = np.logical_and(
             np.logical_and(snr_indices, np.tile(
@@ -179,7 +179,7 @@ class RegressionDCM:
 
         # include everything except padding for informative regions
         data[~hpf_indices] = 0
-        for region in range(self.n_region):
+        for region in range(self._n_region):
             freq1 = hpf_indices[0:int(np.round(data.shape[0]/2)), region].nonzero()[0][-1]
             freq2 = (hpf_indices[int(np.round(data.shape[0]/2)):-1, region].nonzero()[0][0]+
                      int(np.round(data.shape[0]/2)))
@@ -206,43 +206,43 @@ class RegressionDCM:
     def _design_matrix(self) -> (np.ndarray, np.ndarray):
         """Transform initial DCM signals into a set of regressors X (design matrix) and Y (data)"""
         hrf_fft = fft(self.hrf, axis=0, norm='backward')
-        data_fft = fft(self.data, axis=0, norm='backward')
+        data_fft = fft(self._data, axis=0, norm='backward')
 
-        if self.drive_input is not None:
-            drive_input = np.roll(self.drive_input, self.endo_shift, axis=0)
+        if self._drive_input is not None:
+            drive_input = np.roll(self._drive_input, self._endo_shift, axis=0)
         else:
-            drive_input = np.zeros((self.n_datapoint*16, 1))
+            drive_input = np.zeros((self._n_datapoint * 16, 1))
         drive_input = ifft(
             fft(drive_input, axis=0, norm='backward') *
-            np.tile(hrf_fft.reshape(self.conv_length, 1), (1, self.n_endo)))
-        drive_input = np.hstack((drive_input, self.conf))
+            np.tile(hrf_fft.reshape(self._conv_length, 1), (1, self._n_endo)))
+        drive_input = np.hstack((drive_input, self._conf))
 
-        if self.padding:
-            break_point = np.round(self.n_datapoint / 2)
+        if self._padding:
+            break_point = np.round(self._n_datapoint / 2)
             data_fft[break_point, :] = data_fft[break_point, :] / 2
             data_fft = 16 * np.vstack((
                 data_fft[0:(break_point + 1), :],
-                np.zeros((self.conv_length - self.n_datapoint - 1, self.n_region)),
+                np.zeros((self._conv_length - self._n_datapoint - 1, self._n_region)),
                 data_fft[break_point:-1, :]))
-            self.n_datapoint = data_fft.shape[0]
+            self._n_datapoint = data_fft.shape[0]
             drive_fft = fft(drive_input / 16, axis=0, norm='backward')
 
         else:
-            hrf_fft = fft(self.hrf[0:self.conv_length:16], axis=0, norm='backward')
-            drive_fft = fft(drive_input[0:self.conv_length:16, :], axis=0, norm='backward')
+            hrf_fft = fft(self.hrf[0:self._conv_length:16], axis=0, norm='backward')
+            drive_fft = fft(drive_input[0:self._conv_length:16, :], axis=0, norm='backward')
 
-        if self.snr_thresh_std is not None:
+        if self._snr_thresh_std is not None:
             data_fft, filter_indices = self._filter(data_fft, drive_fft, hrf_fft)
         else:
             filter_indices = np.ones(data_fft.shape)
 
-        deriv_coef = np.exp(2 * np.pi * 1j * np.arange(self.n_datapoint) / self.n_datapoint) - 1
+        deriv_coef = np.exp(2 * np.pi * 1j * np.arange(self._n_datapoint) / self._n_datapoint) - 1
         data_deriv = np.tile(
-            deriv_coef.reshape(self.n_datapoint, 1), (1, self.n_region)) * data_fft / self.t_rep
+            deriv_coef.reshape(self._n_datapoint, 1), (1, self._n_region)) * data_fft / self._t_rep
         data_deriv[~filter_indices] = np.nan
 
         bilinear_term = np.zeros((
-            self.n_datapoint, self.n_region * (drive_fft.shape[1]+self.conf.shape[1])))
+            self._n_datapoint, self._n_region * (drive_fft.shape[1] + self._conf.shape[1])))
         design_mat = np.hstack((data_fft, bilinear_term, drive_fft))
         data_mat = self._reduce_zeros(design_mat, data_deriv)
 
@@ -265,29 +265,29 @@ class RegressionDCM:
         The function implements the VB udpate equations derived in Frässele et al. 2017."""
         precision = 1e-5
 
-        if self.prior_a is not None:
-            prior_a = self.prior_a
+        if self._prior_a is not None:
+            prior_a = self._prior_a
         else:
-            prior_a = np.ones((self.n_region, self.n_region))
-        prior_b = np.zeros((self.n_region, self.n_region, self.n_endo))
-        prior_c = np.ones((self.n_region, self.n_endo))
-        if self.drive_input is None: # resting-state
+            prior_a = np.ones((self._n_region, self._n_region))
+        prior_b = np.zeros((self._n_region, self._n_region, self._n_endo))
+        prior_c = np.ones((self._n_region, self._n_endo))
+        if self._drive_input is None: # resting-state
             prior_c = prior_c * 0
-        for _ in range(self.conf.shape[1]):
+        for _ in range(self._conf.shape[1]):
             prior_b = np.dstack((prior_b, prior_b[:, :, 0]))
             prior_c = np.hstack((prior_c, np.ones((prior_c.shape[0], 1))))
 
         indices = (np.hstack((
-            prior_a, prior_b.reshape(self.n_region, self.n_region * prior_c.shape[1]), prior_c)) > 0)
+            prior_a, prior_b.reshape(self._n_region, self._n_region * prior_c.shape[1]), prior_c)) > 0)
         prior_mean, prior_prec, prior_a0, prior_b0 = self._prior(prior_a, prior_b, prior_c)
 
         mean_all = np.zeros(indices.shape)
-        cov = np.zeros((self.n_region, indices.shape[1], indices.shape[1]))
-        alpha = np.zeros(self.n_region)
-        beta = np.zeros(self.n_region)
-        free_energy = np.zeros(self.n_region)
+        cov = np.zeros((self._n_region, indices.shape[1], indices.shape[1]))
+        alpha = np.zeros(self._n_region)
+        beta = np.zeros(self._n_region)
+        free_energy = np.zeros(self._n_region)
 
-        for region in range(self.n_region):
+        for region in range(self._n_region):
             log.debug('Estimating parameters for region %i ...', region)
             data_indices = ~np.isnan(data_mat[:, region])
             design_region = design_mat[np.ix_(data_indices, indices[region, :])]
@@ -360,17 +360,17 @@ class RegressionDCM:
             free_energy: np.ndarray) -> None:
         """Gather parameters in one output structure"""
         # TODO: check if min(size(indices)) == 1 ??
-        indices_a = np.ix_(range(self.n_region), range(self.n_region))
+        indices_a = np.ix_(range(self._n_region), range(self._n_region))
         indices_b = np.ix_(
-            range(self.n_region),
-            range(self.n_region, (self.n_region + self.n_region * self.n_endo)))
+            range(self._n_region),
+            range(self._n_region, (self._n_region + self._n_region * self._n_endo)))
         indices_c = np.ix_(
-            range(self.n_region),
+            range(self._n_region),
             range(
-                self.n_region + self.n_region * (self.n_endo + self.conf.shape[1]),
-                mean_all.shape[1] - self.conf.shape[1]))
+                self._n_region + self._n_region * (self._n_endo + self._conf.shape[1]),
+                mean_all.shape[1] - self._conf.shape[1]))
         indices_baseline = np.ix_(
-            range(self.n_region), range(mean_all.shape[1] - self.conf.shape[1], mean_all.shape[1]))
+            range(self._n_region), range(mean_all.shape[1] - self._conf.shape[1], mean_all.shape[1]))
 
         # TODO: connection probabilities ??
         # TODO: components of free energy ??
@@ -383,7 +383,7 @@ class RegressionDCM:
 
         self.params = {
             'mu_connectivity': mean_all[indices_a],
-            'mu_b': mean_all[indices_b].reshape(self.n_region, self.n_region, self.n_endo),
+            'mu_b': mean_all[indices_b].reshape(self._n_region, self._n_region, self._n_endo),
             'mu_driving_input': mean_all[indices_c] * 16,
             'mu_baseline': mean_all[indices_baseline],
             'mu_covariance': cov,
@@ -402,7 +402,7 @@ class RegressionDCM:
         design_mat, data_mat = self._design_matrix()
 
         log.info('Running model inversion ...')
-        if self.method == 'original':
+        if self._method == 'original':
             self._ridge(design_mat, data_mat)
 
         else:
