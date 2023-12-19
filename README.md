@@ -8,7 +8,7 @@ Python implementation of the
 2. Works for both task and resting-state fMRI data
 3. Works for real data
 
-### Functionas yet missing
+### Functions yet missing
 1. Sparse rDCM model
 2. Option to use synthetic/simulated data
 3. Option to create covaraince matrix

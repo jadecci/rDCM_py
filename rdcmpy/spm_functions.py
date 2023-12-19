@@ -2,7 +2,7 @@ import numpy as np
 from scipy.linalg import issymmetric, svd
 
 
-def _spm_dcm_fmri_prior(
+def spm_dcm_fmri_prior(
         spm_a: np.ndarray, spm_b: np.ndarray, spm_c: np.ndarray) -> tuple[np.ndarray, ...]:
     n_region = spm_a.shape[0]
     a_mat = np.array(spm_a > 0, dtype=int)
@@ -28,7 +28,7 @@ def _spm_dcm_fmri_prior(
     return prior_mean, prior_precision
 
 
-def _spm_logdet(in_mat: np.ndarray) -> np.ndarray:
+def spm_logdet(in_mat: np.ndarray) -> np.ndarray:
     tol = 1e-16
     indices = np.where((np.diag(in_mat) > tol) & (np.diag(in_mat) < 1/tol))[0]
     diag_mat = in_mat[np.ix_(indices, indices)]

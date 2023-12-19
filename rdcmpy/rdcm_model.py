@@ -54,8 +54,6 @@ class RegressionDCM:
         if debug:
             log.setLevel(level=logging.DEBUG)
 
-        # TODO: set up dummy a, b, c, d??
-
     def _add_endo(self, endo_input: np.ndarray) -> None:
         """Add endogenous input to the DCM model"""
         if endo_input.shape[0] == self.data.shape[0] * 16:
@@ -189,7 +187,8 @@ class RegressionDCM:
 
         return data, hpf_indices
 
-    def _reduce_zeros(self, design_mat: np.ndarray, data: np.ndarray) -> np.ndarray:
+    @staticmethod
+    def _reduce_zeros(design_mat: np.ndarray, data: np.ndarray) -> np.ndarray:
         """If there are more zero-valued frequencies than informative ones,
         subsample those frequencies to balance dataset"""
         data_all = np.abs(np.hstack((design_mat, data))).sum(axis=1)
@@ -254,7 +253,7 @@ class RegressionDCM:
             spm_c: np.ndarray) -> tuple[np.ndarray, np.ndarray, float, float]:
         """Get the prior parameters on model parameters (theta) and noise precision (tau)
         for the particular connectivity pattern"""
-        prior_mean, prior_prec = spm_func._spm_dcm_fmri_prior(spm_a, spm_b, spm_c)
+        prior_mean, prior_prec = spm_func.spm_dcm_fmri_prior(spm_a, spm_b, spm_c)
         prior_a0 = 2
         prior_b0 = 1
 
@@ -265,21 +264,21 @@ class RegressionDCM:
         The function implements the VB udpate equations derived in Frässele et al. 2017."""
         precision = 1e-5
 
-        spm_a = np.ones((self.n_region, self.n_region))
-        spm_b = np.zeros((self.n_region, self.n_region, self.n_endo))
-        spm_c = np.ones((self.n_region, self.n_endo))
+        prior_a = np.ones((self.n_region, self.n_region))
+        prior_b = np.zeros((self.n_region, self.n_region, self.n_endo))
+        prior_c = np.ones((self.n_region, self.n_endo))
         if self.endo_input is None:
-            spm_c = spm_c * 0
+            prior_c = prior_c * 0
         for _ in range(self.conf.shape[1]):
-            spm_b = np.dstack((spm_b, spm_b[:, :, 0]))
-            spm_c = np.hstack((spm_c, np.ones((spm_c.shape[0], 1))))
+            prior_b = np.dstack((prior_b, prior_b[:, :, 0]))
+            prior_c = np.hstack((prior_c, np.ones((prior_c.shape[0], 1))))
 
         indices = (np.hstack((
-            spm_a, spm_b.reshape(self.n_region, self.n_region * spm_c.shape[1]), spm_c)) > 0)
-        prior_mean, prior_prec, prior_a0, prior_b0 = self._prior(spm_a, spm_b, spm_c)
+            prior_a, prior_b.reshape(self.n_region, self.n_region * prior_c.shape[1]), prior_c)) > 0)
+        prior_mean, prior_prec, prior_a0, prior_b0 = self._prior(prior_a, prior_b, prior_c)
 
-        mu = np.zeros(indices.shape)
-        sigma = np.zeros((self.n_region, indices.shape[1], indices.shape[1]))
+        mean_all = np.zeros(indices.shape)
+        cov = np.zeros((self.n_region, indices.shape[1], indices.shape[1]))
         alpha = np.zeros(self.n_region)
         beta = np.zeros(self.n_region)
         free_energy = np.zeros(self.n_region)
@@ -302,12 +301,12 @@ class RegressionDCM:
             free_energy_old = -np.inf
 
             for i in range(500):
-                sigma_region = np.linalg.inv(tau_region * xtx + pp_region)
-                mu_region = sigma_region @ (tau_region * xty + pp_region @ pm_region)
+                cov_region = np.linalg.inv(tau_region * xtx + pp_region)
+                mean_region = cov_region @ (tau_region * xty + pp_region @ pm_region)
                 post_rate = (
-                        (data_region - design_region @ mu_region).conj().T @
-                        (data_region - design_region @ mu_region) / 2 +
-                        np.trace(xtx @ sigma_region) / 2)
+                        (data_region - design_region @ mean_region).conj().T @
+                        (data_region - design_region @ mean_region) / 2 +
+                        np.trace(xtx @ cov_region) / 2)
                 beta_region = prior_b0 + post_rate
                 tau_region = alpha_region / beta_region
 
@@ -315,17 +314,17 @@ class RegressionDCM:
                         n_effective * (psi(alpha_region) - np.log(beta_region)) / 2 -
                         n_effective * np.log(2*np.pi) / 2 - post_rate * tau_region)
                 log_p_weight = (
-                        1/2 * spm_func._spm_logdet(pp_region) -
+                        1 / 2 * spm_func.spm_logdet(pp_region) -
                         dim_effective * np.log(2*np.pi) / 2 -
-                        (mu_region - pm_region).T @ pp_region @ (mu_region - pm_region) / 2 -
-                        np.trace(pp_region @ sigma_region) / 2)
+                        (mean_region - pm_region).T @ pp_region @ (mean_region - pm_region) / 2 -
+                        np.trace(pp_region @ cov_region) / 2)
                 log_p_prec = (
                     prior_a0 * np.log(prior_b0) - gammaln(prior_a0) +
                     (prior_a0 - 1) * (psi(alpha_region) - np.log(beta_region)) -
                     prior_b0 * tau_region)
                 log_q_weight = (
-                    1/2 * spm_func._spm_logdet(sigma_region) +
-                    dim_effective * (1 + np.log(2*np.pi)) / 2)
+                        1 / 2 * spm_func.spm_logdet(cov_region) +
+                        dim_effective * (1 + np.log(2*np.pi)) / 2)
                 log_q_prec = (
                     alpha_region - np.log(beta_region) + gammaln(alpha_region) +
                     (1 - alpha_region) * psi(alpha_region))
@@ -339,8 +338,8 @@ class RegressionDCM:
                     # store parameters
                     indices_curr = indices[region, :]
                     free_energy[region] = np.real(free_energy_curr)
-                    mu[region, indices_curr] = np.real(mu_region)
-                    sigma[np.ix_([region], indices_curr, indices_curr)] = np.real(sigma_region)
+                    mean_all[region, indices_curr] = np.real(mean_region)
+                    cov[np.ix_([region], indices_curr, indices_curr)] = np.real(cov_region)
                     alpha[region] = np.real(alpha_region)
                     beta[region] = np.real(beta_region)
 
@@ -349,11 +348,11 @@ class RegressionDCM:
                 free_energy_old = np.real(free_energy_curr)
 
         self._aggregate_params(
-            prior_mean, prior_prec, prior_a0, prior_b0, mu, sigma, alpha, beta, free_energy)
+            prior_mean, prior_prec, prior_a0, prior_b0, mean_all, cov, alpha, beta, free_energy)
 
     def _aggregate_params(
             self, prior_mean: np.ndarray, prior_prec: np.ndarray, prior_a0: float, prior_b0: float,
-            mu: np.ndarray, sigma: np.ndarray, alpha: np.ndarray, beta: np.ndarray,
+            mean_all: np.ndarray, cov: np.ndarray, alpha: np.ndarray, beta: np.ndarray,
             free_energy: np.ndarray) -> None:
         """Gather parameters in one output structure"""
         # TODO: check if min(size(indices)) == 1 ??
@@ -365,9 +364,9 @@ class RegressionDCM:
             range(self.n_region),
             range(
                 self.n_region + self.n_region * (self.n_endo + self.conf.shape[1]),
-                mu.shape[1] - self.conf.shape[1]))
+                mean_all.shape[1] - self.conf.shape[1]))
         indices_baseline = np.ix_(
-            range(self.n_region), range(mu.shape[1] - self.conf.shape[1], mu.shape[1]))
+            range(self.n_region), range(mean_all.shape[1] - self.conf.shape[1], mean_all.shape[1]))
 
         # TODO: connection probabilities ??
         # TODO: components of free energy ??
@@ -379,11 +378,11 @@ class RegressionDCM:
             'tau_beta': prior_b0}
 
         self.params = {
-            'mu_connectivity': mu[indices_a],
-            'mu_b': mu[indices_b].reshape(self.n_region, self.n_region, self.n_endo),
-            'mu_driving_input': mu[indices_c] * 16,
-            'mu_baseline': mu[indices_baseline],
-            'mu_covariance': sigma,
+            'mu_connectivity': mean_all[indices_a],
+            'mu_b': mean_all[indices_b].reshape(self.n_region, self.n_region, self.n_endo),
+            'mu_driving_input': mean_all[indices_c] * 16,
+            'mu_baseline': mean_all[indices_baseline],
+            'mu_covariance': cov,
             'tau_alpha': alpha,
             'tau_beta': beta,
             'free_energy': free_energy.sum(),
