@@ -22,7 +22,7 @@ class DimensionError(Exception):
 class RegressionDCM:
     """regression Dynamic Causal Modelling (rDCM)"""
     def __init__(
-            self, data: np.ndarray, t_rep: float, endo_input: Optional[np.ndarray] = None,
+            self, data: np.ndarray, t_rep: float, drive_input: Optional[np.ndarray] = None,
             method: Literal['original', 'sparse'] = 'original', endo_shift: int = 0,
             padding: bool = False, snr_thresh_std: Union[int, None] = 1,
             debug: bool = False) -> None:
@@ -32,12 +32,12 @@ class RegressionDCM:
         self.n_datapoint, self.n_region = data.shape
         self.conv_length = self.n_datapoint * 16
 
-        if endo_input is not None:
-            self._add_endo(endo_input)
-            self.n_endo = self.endo_input.shape[1]
+        if drive_input is not None:
+            self._add_drive(drive_input)
+            self.n_endo = self.drive_input.shape[1]
             self.conf = np.ones((self.conv_length, 1))
         else:
-            self.endo_input = None
+            self.drive_input = None
             self.n_endo = 1
             self.conf = np.zeros((self.conv_length, 0))
 
@@ -54,22 +54,22 @@ class RegressionDCM:
         if debug:
             log.setLevel(level=logging.DEBUG)
 
-    def _add_endo(self, endo_input: np.ndarray) -> None:
+    def _add_drive(self, drive_input: np.ndarray) -> None:
         """Add endogenous input to the DCM model"""
-        if endo_input.shape[0] == self.data.shape[0] * 16:
+        if drive_input.shape[0] == self.data.shape[0] * 16:
             log.debug('endo_input with dimenions (16xN)xU assigned directly')
-            self.endo_input = endo_input
+            self.drive_input = drive_input
 
-        elif endo_input.shape[0] == self.data.shape[0]:
+        elif drive_input.shape[0] == self.data.shape[0]:
             log.debug(
                 'endo_input with dimensions NxU will be repeated '
                 'to match the correct microtime resolution')
-            endo_up = np.zeros((endo_input.shape[0]*16, endo_input.shape[1]))
-            for nr_input in range(endo_up.shape[1]):
-                endo_curr = endo_input[:, nr_input].T
-                endo_curr = np.tile(endo_curr, (16, 1))
-                endo_up[:, nr_input] = endo_curr.flatten()
-            self.endo_input = endo_up
+            drive_input_up = np.zeros((drive_input.shape[0] * 16, drive_input.shape[1]))
+            for nr_input in range(drive_input_up.shape[1]):
+                drive_curr = drive_input[:, nr_input].T
+                drive_curr = np.tile(drive_curr, (16, 1))
+                drive_input_up[:, nr_input] = drive_curr.flatten()
+            self.drive_input = drive_input_up
 
         else:
             msg = (
@@ -127,18 +127,18 @@ class RegressionDCM:
         self.hrf = v0 * (k1 * (1 - q1) + k2 * (1 - q1 / v1))  # k3 = 0
 
     def _filter(
-            self, data: np.ndarray, endo: np.ndarray, hrf: np.ndarray) -> (np.ndarray, np.ndarray):
+            self, data: np.ndarray, drive: np.ndarray, hrf: np.ndarray) -> (np.ndarray, np.ndarray):
         """Specifies informative frequencies and filters the Fourier-transformed signal"""
         precision = 1e-4
 
         data_real = np.real(data)
         data_imag = np.imag(data)
 
-        if self.endo_input is not None:
-            endo_indices = (np.abs(endo).sum(axis=1) > precision)
+        if self.drive_input is not None:
+            drive_indices = (np.abs(drive).sum(axis=1) > precision)
             hpf = 16
         else:
-            endo_indices = np.full(endo.shape[0], True)
+            drive_indices = np.full(drive.shape[0], True)
             hpf = np.maximum(16 + (self.snr_thresh_std-1) * 4, 16)
         freq = int(np.round(7 * data.shape[0] / hpf))
         freq_indices = np.concatenate((
@@ -155,7 +155,7 @@ class RegressionDCM:
         else:
             data_indices = np.full(self.n_datapoint, True)
         noise_indices = np.array(
-            ~np.logical_and(np.logical_and(hrf_indices, endo_indices), data_indices))
+            ~np.logical_and(np.logical_and(hrf_indices, drive_indices), data_indices))
 
         if noise_indices.sum() > 1:
             std_real = np.tile(np.std(data_real[noise_indices, :]), (data.shape[0], 1))
@@ -207,14 +207,14 @@ class RegressionDCM:
         hrf_fft = fft(self.hrf, axis=0, norm='backward')
         data_fft = fft(self.data, axis=0, norm='backward')
 
-        if self.endo_input is not None:
-            endo_input = np.roll(self.endo_input, self.endo_shift, axis=0)
+        if self.drive_input is not None:
+            drive_input = np.roll(self.drive_input, self.endo_shift, axis=0)
         else:
-            endo_input = np.zeros((self.n_datapoint*16, 1))
-        endo_input = ifft(
-            fft(endo_input, axis=0, norm='backward') *
+            drive_input = np.zeros((self.n_datapoint*16, 1))
+        drive_input = ifft(
+            fft(drive_input, axis=0, norm='backward') *
             np.tile(hrf_fft.reshape(self.conv_length, 1), (1, self.n_endo)))
-        endo_input = np.hstack((endo_input, self.conf))
+        drive_input = np.hstack((drive_input, self.conf))
 
         if self.padding:
             break_point = np.round(self.n_datapoint / 2)
@@ -224,14 +224,14 @@ class RegressionDCM:
                 np.zeros((self.conv_length - self.n_datapoint - 1, self.n_region)),
                 data_fft[break_point:-1, :]))
             self.n_datapoint = data_fft.shape[0]
-            endo_fft = fft(endo_input / 16, axis=0, norm='backward')
+            drive_fft = fft(drive_input / 16, axis=0, norm='backward')
 
         else:
             hrf_fft = fft(self.hrf[0:self.conv_length:16], axis=0, norm='backward')
-            endo_fft = fft(endo_input[0:self.conv_length:16, :], axis=0, norm='backward')
+            drive_fft = fft(drive_input[0:self.conv_length:16, :], axis=0, norm='backward')
 
         if self.snr_thresh_std is not None:
-            data_fft, filter_indices = self._filter(data_fft, endo_fft, hrf_fft)
+            data_fft, filter_indices = self._filter(data_fft, drive_fft, hrf_fft)
         else:
             filter_indices = np.ones(data_fft.shape)
 
@@ -241,8 +241,8 @@ class RegressionDCM:
         data_deriv[~filter_indices] = np.nan
 
         bilinear_term = np.zeros((
-            self.n_datapoint, self.n_region * (endo_fft.shape[1]+self.conf.shape[1])))
-        design_mat = np.hstack((data_fft, bilinear_term, endo_fft))
+            self.n_datapoint, self.n_region * (drive_fft.shape[1]+self.conf.shape[1])))
+        design_mat = np.hstack((data_fft, bilinear_term, drive_fft))
         data_mat = self._reduce_zeros(design_mat, data_deriv)
 
         return design_mat, data_mat
@@ -267,7 +267,7 @@ class RegressionDCM:
         prior_a = np.ones((self.n_region, self.n_region))
         prior_b = np.zeros((self.n_region, self.n_region, self.n_endo))
         prior_c = np.ones((self.n_region, self.n_endo))
-        if self.endo_input is None:
+        if self.drive_input is None: # resting-state
             prior_c = prior_c * 0
         for _ in range(self.conf.shape[1]):
             prior_b = np.dstack((prior_b, prior_b[:, :, 0]))
@@ -392,8 +392,7 @@ class RegressionDCM:
         """Estimate parameters of a DCM model"""
         t_start = time.time()
         log.info('Starting rDCM ...')
-        # TODO: what is DCM.M??
-        # TODO: dummy variables for resting-state??
+        # TODO: what is the use of DCM.M (model)??
 
         self._convolution_bm()
         design_mat, data_mat = self._design_matrix()
