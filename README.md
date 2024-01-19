@@ -3,6 +3,11 @@ Python implementation of the
 [regression Dynamic Causal Modelling (rDCM) toolbox](https://github.com/translationalneuromodeling/tapas/tree/master/rDCM) 
 (v6.0.0).
 
+## Installation
+```python
+python3 -m pip install git+https://github.com/jadecci/rDCM_py.git
+```
+
 ## Usage
 ```python
 from rdcmpy import RegressionDCM
@@ -26,7 +31,7 @@ C = params['mu_driving_input']
 3. Option to create covaraince matrix
 4. Option to predict signals (in time domain) and evaluate the prediction
 
-## References
+# References
 
 1. Frässle, S., Lomakina, E.I., Razi, A., Friston, K.J., Buhmann, J.M., Stephan, K.E., 2017. 
 Regression DCM for fMRI. *NeuroImage* 155, 406–421. 
